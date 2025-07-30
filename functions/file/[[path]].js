@@ -18,7 +18,6 @@ async function checkRateLimit(request, env) {
   if (!env.rate_limit) {
     return { allowed: true };
   }
-  
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   const ua = request.headers.get('User-Agent') || '';
   
@@ -89,6 +88,18 @@ export async function onRequest(context) {  // Contents of context object
         next, // used for middleware or to fetch assets
         data, // arbitrary space for passing data between middlewares
     } = context;
+    const secretKey = env.SECRET_KEY;
+    if (!secretKey || secretKey.trim() === '') {
+        // 如果没有在后台设置密钥，则返回服务器错误，提醒您去设置
+        return new Response('Error: Server security key not configured.', { status: 500 });
+    }
+    const pathSegments = params.path.split('/');
+    const providedKey = pathSegments.shift();
+    const actualFileId = pathSegments.join('/'); // 剩下的部分是文件ID
+    if (providedKey !== secretKey) {
+        return new Response('Error: Access Denied.', { status: 403 });
+    }
+    params.path = actualFileId;
     const rateCheck = await checkRateLimit(request, env);
     if (!rateCheck.allowed) {
         return new Response(`访问受限: ${rateCheck.reason}`, {
