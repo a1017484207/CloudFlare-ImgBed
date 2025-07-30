@@ -5,6 +5,67 @@ import { setCommonHeaders, setRangeHeaders, handleHeadRequest, getFileContent, i
             returnWithCheck, return404, isDomainAllowed } from './fileTools';
 
 
+const RATE_LIMIT = {
+  REQUESTS_PER_HOUR: 1200,
+  REQUESTS_PER_MINUTE: 40,
+  BURST_LIMIT: 10,
+};
+
+// 添加速率限制检查函数
+async function checkRateLimit(request, env) {
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const ua = request.headers.get('User-Agent') || '';
+  
+  // 识别爬虫
+  if (!ua || ua.length < 10 || /bot|crawler|spider/i.test(ua)) {
+    return { allowed: false, reason: '异常客户端' };
+  }
+  
+  const now = Date.now();
+  
+  // 检查瞬时请求（1秒内）
+  const burstKey = `rate_burst_${ip}`;
+  const burstData = await env.img_url.get(burstKey, 'json') || { count: 0, time: now };
+  if (now - burstData.time < 1000 && burstData.count >= RATE_LIMIT.BURST_LIMIT) {
+    return { allowed: false, reason: '请求过快' };
+  }
+  
+  // 检查分钟限制
+  const minuteKey = `rate_min_${ip}`;
+  const minuteData = await env.img_url.get(minuteKey, 'json') || { count: 0, reset: now + 60000 };
+  if (now < minuteData.reset && minuteData.count >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
+    return { allowed: false, reason: '一分钟内请求过多' };
+  }
+  
+  // 检查小时限制
+  const hourKey = `rate_hour_${ip}`;
+  const hourData = await env.img_url.get(hourKey, 'json') || { count: 0, reset: now + 3600000 };
+  if (now < hourData.reset && hourData.count >= RATE_LIMIT.REQUESTS_PER_HOUR) {
+    return { allowed: false, reason: '一小时内请求过多' };
+  }
+  
+  // 更新计数
+  await Promise.all([
+    env.img_url.put(burstKey, JSON.stringify({ 
+      count: now - burstData.time < 1000 ? burstData.count + 1 : 1, 
+      time: now 
+    }), { expirationTtl: 10 }),
+    
+    env.img_url.put(minuteKey, JSON.stringify({ 
+      count: now < minuteData.reset ? minuteData.count + 1 : 1, 
+      reset: now < minuteData.reset ? minuteData.reset : now + 60000 
+    }), { expirationTtl: 60 }),
+    
+    env.img_url.put(hourKey, JSON.stringify({ 
+      count: now < hourData.reset ? hourData.count + 1 : 1, 
+      reset: now < hourData.reset ? hourData.reset : now + 3600000 
+    }), { expirationTtl: 3600 })
+  ]);
+  
+  return { allowed: true };
+}
+
+
 export async function onRequest(context) {  // Contents of context object
     const {
         request, // same as existing Worker API
@@ -14,7 +75,18 @@ export async function onRequest(context) {  // Contents of context object
         next, // used for middleware or to fetch assets
         data, // arbitrary space for passing data between middlewares
     } = context;
-
+    const rateCheck = await checkRateLimit(request, env);
+    if (!rateCheck.allowed) {
+        return new Response(`访问受限: ${rateCheck.reason}`, {
+            status: 429,
+            headers: {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Retry-After': '60',
+                'Cache-Control': 'no-cache'
+            }
+        });
+    }
+            
     // 解码文件ID
     let fileId = '';
     try {
