@@ -13,54 +13,68 @@ const RATE_LIMIT = {
 
 // 添加速率限制检查函数
 async function checkRateLimit(request, env) {
+  // 如果没有 rate_limit KV，直接放行
+  if (!env.rate_limit) {
+    return { allowed: true };
+  }
+  
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   const ua = request.headers.get('User-Agent') || '';
   
-  // 识别爬虫
   if (!ua || ua.length < 10 || /bot|crawler|spider/i.test(ua)) {
     return { allowed: false, reason: '异常客户端' };
   }
   
   const now = Date.now();
+  const rateLimitKV = env.rate_limit;  // 使用独立的KV
   
-  // 检查瞬时请求（1秒内）
-  const burstKey = `rate_burst_${ip}`;
-  const burstData = await env.img_url.get(burstKey, 'json') || { count: 0, time: now };
-  if (now - burstData.time < 1000 && burstData.count >= RATE_LIMIT.BURST_LIMIT) {
-    return { allowed: false, reason: '请求过快' };
-  }
-  
-  // 检查分钟限制
-  const minuteKey = `rate_min_${ip}`;
-  const minuteData = await env.img_url.get(minuteKey, 'json') || { count: 0, reset: now + 60000 };
-  if (now < minuteData.reset && minuteData.count >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
-    return { allowed: false, reason: '一分钟内请求过多' };
-  }
-  
-  // 检查小时限制
-  const hourKey = `rate_hour_${ip}`;
-  const hourData = await env.img_url.get(hourKey, 'json') || { count: 0, reset: now + 3600000 };
-  if (now < hourData.reset && hourData.count >= RATE_LIMIT.REQUESTS_PER_HOUR) {
-    return { allowed: false, reason: '一小时内请求过多' };
-  }
-  
-  // 更新计数
-  await Promise.all([
-    env.img_url.put(burstKey, JSON.stringify({ 
-      count: now - burstData.time < 1000 ? burstData.count + 1 : 1, 
-      time: now 
-    }), { expirationTtl: 10 }),
+  try {
+    // 读取所有计数
+    const [burstData, minuteData, hourData] = await Promise.all([
+      rateLimitKV.get(`burst_${ip}`, 'json'),
+      rateLimitKV.get(`min_${ip}`, 'json'),
+      rateLimitKV.get(`hour_${ip}`, 'json')
+    ]);
     
-    env.img_url.put(minuteKey, JSON.stringify({ 
-      count: now < minuteData.reset ? minuteData.count + 1 : 1, 
-      reset: now < minuteData.reset ? minuteData.reset : now + 60000 
-    }), { expirationTtl: 60 }),
+    // 检查限制
+    const burst = burstData || { count: 0, time: now };
+    const minute = minuteData || { count: 0, reset: now + 60000 };
+    const hour = hourData || { count: 0, reset: now + 3600000 };
     
-    env.img_url.put(hourKey, JSON.stringify({ 
-      count: now < hourData.reset ? hourData.count + 1 : 1, 
-      reset: now < hourData.reset ? hourData.reset : now + 3600000 
-    }), { expirationTtl: 3600 })
-  ]);
+    if (now - burst.time < 1000 && burst.count >= RATE_LIMIT.BURST_LIMIT) {
+      return { allowed: false, reason: '请求过快' };
+    }
+    
+    if (now < minute.reset && minute.count >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
+      return { allowed: false, reason: '一分钟内请求过多' };
+    }
+    
+    if (now < hour.reset && hour.count >= RATE_LIMIT.REQUESTS_PER_HOUR) {
+      return { allowed: false, reason: '一小时内请求过多' };
+    }
+    
+    // 更新计数
+    await Promise.all([
+      rateLimitKV.put(`burst_${ip}`, JSON.stringify({ 
+        count: now - burst.time < 1000 ? burst.count + 1 : 1, 
+        time: now 
+      }), { expirationTtl: 10 }),
+      
+      rateLimitKV.put(`min_${ip}`, JSON.stringify({ 
+        count: now < minute.reset ? minute.count + 1 : 1, 
+        reset: now < minute.reset ? minute.reset : now + 60000 
+      }), { expirationTtl: 60 }),
+      
+      rateLimitKV.put(`hour_${ip}`, JSON.stringify({ 
+        count: now < hour.reset ? hour.count + 1 : 1, 
+        reset: now < hour.reset ? hour.reset : now + 3600000 
+      }), { expirationTtl: 3600 })
+    ]);
+    
+  } catch (error) {
+    // 任何错误都放行，不影响图片访问
+    console.error('Rate limit error:', error);
+  }
   
   return { allowed: true };
 }
