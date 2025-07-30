@@ -4,6 +4,82 @@ import { TelegramAPI } from "../utils/telegramAPI";
 import { setCommonHeaders, setRangeHeaders, handleHeadRequest, getFileContent, isTgChannel, 
             returnWithCheck, return404, isDomainAllowed } from './fileTools';
 
+
+
+const RATE_LIMIT = {
+  REQUESTS_PER_HOUR: 1200,
+  REQUESTS_PER_MINUTE: 40,
+  BURST_LIMIT: 10,
+};
+
+// 添加速率限制检查函数
+async function checkRateLimit(request, env) {
+  // 如果没有 rate_limit KV，直接放行
+  if (!env.rate_limit) {
+    return { allowed: true };
+  }
+  
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const ua = request.headers.get('User-Agent') || '';
+  
+  if (!ua || ua.length < 10 || /bot|crawler|spider/i.test(ua)) {
+    return { allowed: false, reason: '异常客户端' };
+  }
+  
+  const now = Date.now();
+  const rateLimitKV = env.rate_limit;  // 使用独立的KV
+  
+  try {
+    // 读取所有计数
+    const [burstData, minuteData, hourData] = await Promise.all([
+      rateLimitKV.get(`burst_${ip}`, 'json'),
+      rateLimitKV.get(`min_${ip}`, 'json'),
+      rateLimitKV.get(`hour_${ip}`, 'json')
+    ]);
+    
+    // 检查限制
+    const burst = burstData || { count: 0, time: now };
+    const minute = minuteData || { count: 0, reset: now + 60000 };
+    const hour = hourData || { count: 0, reset: now + 3600000 };
+    
+    if (now - burst.time < 1000 && burst.count >= RATE_LIMIT.BURST_LIMIT) {
+      return { allowed: false, reason: '请求过快' };
+    }
+    
+    if (now < minute.reset && minute.count >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
+      return { allowed: false, reason: '一分钟内请求过多' };
+    }
+    
+    if (now < hour.reset && hour.count >= RATE_LIMIT.REQUESTS_PER_HOUR) {
+      return { allowed: false, reason: '一小时内请求过多' };
+    }
+    
+    // 更新计数
+    await Promise.all([
+      rateLimitKV.put(`burst_${ip}`, JSON.stringify({ 
+        count: now - burst.time < 1000 ? burst.count + 1 : 1, 
+        time: now 
+      }), { expirationTtl: 10 }),
+      
+      rateLimitKV.put(`min_${ip}`, JSON.stringify({ 
+        count: now < minute.reset ? minute.count + 1 : 1, 
+        reset: now < minute.reset ? minute.reset : now + 60000 
+      }), { expirationTtl: 60 }),
+      
+      rateLimitKV.put(`hour_${ip}`, JSON.stringify({ 
+        count: now < hour.reset ? hour.count + 1 : 1, 
+        reset: now < hour.reset ? hour.reset : now + 3600000 
+      }), { expirationTtl: 3600 })
+    ]);
+    
+  } catch (error) {
+    // 任何错误都放行，不影响图片访问
+    console.error('Rate limit error:', error);
+  }
+  
+  return { allowed: true };
+}
+
 export async function onRequest(context) {  // Contents of context object
     const {
         request, // same as existing Worker API
@@ -13,7 +89,17 @@ export async function onRequest(context) {  // Contents of context object
         next, // used for middleware or to fetch assets
         data, // arbitrary space for passing data between middlewares
     } = context;
-
+    const rateCheck = await checkRateLimit(request, env);
+    if (!rateCheck.allowed) {
+        return new Response(`访问受限: ${rateCheck.reason}`, {
+            status: 429,
+            headers: {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Retry-After': '60',
+                'Cache-Control': 'no-cache'
+            }
+        });
+    }
             
     // 解码文件ID
     let fileId = '';
