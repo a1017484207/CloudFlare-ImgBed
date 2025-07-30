@@ -90,16 +90,17 @@ export async function onRequest(context) {  // Contents of context object
     } = context;
     const secretKey = env.SECRET_KEY;
     if (!secretKey || secretKey.trim() === '') {
-        // 如果没有在后台设置密钥，则返回服务器错误，提醒您去设置
         return new Response('Error: Server security key not configured.', { status: 500 });
     }
+
     const pathSegments = params.path.split('/');
     const providedKey = pathSegments.shift();
-    const actualFileId = pathSegments.join('/'); // 剩下的部分是文件ID
+
     if (providedKey !== secretKey) {
         return new Response('Error: Access Denied.', { status: 403 });
     }
-    params.path = actualFileId;
+
+    const actualPath = pathSegments.join('/');
     const rateCheck = await checkRateLimit(request, env);
     if (!rateCheck.allowed) {
         return new Response(`访问受限: ${rateCheck.reason}`, {
@@ -115,7 +116,7 @@ export async function onRequest(context) {  // Contents of context object
     // 解码文件ID
     let fileId = '';
     try {
-        params.path = decodeURIComponent(params.path);
+        const decodedPath = decodeURIComponent(actualPath);
         fileId = params.path.split(',').join('/');
     } catch (e) {
         return new Response('Error: Decode Image ID Failed', { status: 400 });
