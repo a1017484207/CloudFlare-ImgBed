@@ -88,21 +88,6 @@ export async function onRequest(context) {  // Contents of context object
         next, // used for middleware or to fetch assets
         data, // arbitrary space for passing data between middlewares
     } = context;
-    const secretKey = env.SECRET_KEY;
-    if (!secretKey || secretKey.trim() === '') {
-        return new Response('Error: Server security key not configured.', { status: 500 });
-    }
-    
-    // 我们直接使用 params.path，因为对于 /file/a/b.jpg, 它就是 "a/b.jpg"
-    const pathSegments = params.path.split('/');
-    const providedKey = pathSegments.shift();
-    
-    if (providedKey !== secretKey) {
-        return new Response('Error: Access Denied.', { status: 403 });
-    }
-
-    // 将不含密钥的真实路径，覆盖回 params.path
-    params.path = pathSegments.join('/');
     const rateCheck = await checkRateLimit(request, env);
     if (!rateCheck.allowed) {
         return new Response(`访问受限: ${rateCheck.reason}`, {
