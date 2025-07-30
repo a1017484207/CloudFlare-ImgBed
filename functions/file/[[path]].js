@@ -88,19 +88,33 @@ export async function onRequest(context) {  // Contents of context object
         next, // used for middleware or to fetch assets
         data, // arbitrary space for passing data between middlewares
     } = context;
+    // ==========================================================
+    // ===========> 在这里，只在这里，添加密钥验证 <===========
+    // ==========================================================
     const secretKey = env.SECRET_KEY;
     if (!secretKey || secretKey.trim() === '') {
         return new Response('Error: Server security key not configured.', { status: 500 });
     }
-
-    const pathSegments = params.path.split('/');
+    
+    // 这个文件处理的是 /file/ 之后的路径，所以 params.path 已经是 /file/ 后面的部分了
+    // 但是，我们需要的是包含 /file/ 的完整路径来解析密钥
+    // 所以我们从原始的 request.url 中获取
+    const url = new URL(request.url);
+    
+    // 从 pathname 中去掉开头的 /file/，得到包含密钥和真实文件名的路径
+    // 例如，从 "/file/密钥/a/b.jpg" 得到 "密钥/a/b.jpg"
+    const pathWithKey = url.pathname.substring('/file/'.length); 
+    
+    const pathSegments = pathWithKey.split('/');
     const providedKey = pathSegments.shift();
-
+    
     if (providedKey !== secretKey) {
         return new Response('Error: Access Denied.', { status: 403 });
     }
 
-    const actualPath = pathSegments.join('/');
+    // 关键一步：用我们解析出的、不含密钥的真实路径，去覆盖掉原始的 params.path
+    // 这样，后续的所有代码都将处理正确的路径
+    params.path = pathSegments.join('/');
     const rateCheck = await checkRateLimit(request, env);
     if (!rateCheck.allowed) {
         return new Response(`访问受限: ${rateCheck.reason}`, {
@@ -116,7 +130,7 @@ export async function onRequest(context) {  // Contents of context object
     // 解码文件ID
     let fileId = '';
     try {
-        const decodedPath = decodeURIComponent(actualPath);
+        params.path = decodeURIComponent(params.path);
         fileId = params.path.split(',').join('/');
     } catch (e) {
         return new Response('Error: Decode Image ID Failed', { status: 400 });
