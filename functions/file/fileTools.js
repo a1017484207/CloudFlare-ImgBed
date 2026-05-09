@@ -84,7 +84,7 @@ export async function getFileContent(request, targetUrl, max_retries = 2) {
             if (response.ok || response.status === 304) {
                 return response;
             } else if (response.status === 404) {
-                return new Response('Error: Image Not Found', { status: 404 });
+                return returnFileNotFound();
             } else {
                 retries++;
             }
@@ -93,6 +93,28 @@ export async function getFileContent(request, targetUrl, max_retries = 2) {
         }
     }
     return null;
+}
+
+// 文件缺失必须明确返回 404 且禁止缓存，避免 CDN 把错误页当成图片缓存。
+export function returnFileNotFound(message = 'Error: Image Not Found') {
+    return new Response(message, {
+        status: 404,
+        headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-store, max-age=0',
+        },
+    });
+}
+
+// 源站读取异常也不应被缓存。
+export function returnFileError(message = 'Error: Failed to fetch file') {
+    return new Response(message, {
+        status: 500,
+        headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-store, max-age=0',
+        },
+    });
 }
 
 export function isTgChannel(imgRecord) {
@@ -141,21 +163,14 @@ export async function returnWithCheck(context, imgRecord) {
 export async function return404(url) {
     const Img404 = await fetch(url.origin + "/static/404.png");
     if (!Img404.ok) {
-        return new Response('Error: Image Not Found',
-            {
-                status: 404,
-                headers: {
-                    "Cache-Control": "public, max-age=86400"
-                }
-            }
-        );
+        return returnFileNotFound();
     } else {
         return new Response(Img404.body, {
             status: 404,
             headers: {
                 "Content-Type": "image/png",
                 "Content-Disposition": "inline",
-                "Cache-Control": "public, max-age=86400",
+                "Cache-Control": "no-store, max-age=0",
             },
         });
     }
