@@ -2,7 +2,7 @@ import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { fetchSecurityConfig } from "../utils/sysConfig";
 import { TelegramAPI } from "../utils/telegramAPI";
 import { setCommonHeaders, setRangeHeaders, handleHeadRequest, getFileContent, isTgChannel, 
-            returnWithCheck, return404, isDomainAllowed } from './fileTools';
+            returnWithCheck, return404, returnBlockImg, isDomainAllowed, returnFileNotFound, returnFileError } from './fileTools';
 
 
 
@@ -127,7 +127,7 @@ export async function onRequest(context) {  // Contents of context object
     // 从KV中获取图片记录
     const imgRecord = await env.img_url.getWithMetadata(fileId);
     if (!imgRecord) {
-        return new Response('Error: Image Not Found', { status: 404 });
+        return returnFileNotFound();
     }
     
     // 如果metadata不存在，只可能是之前未设置KV，且存储在Telegraph上的图片
@@ -200,7 +200,7 @@ export async function onRequest(context) {  // Contents of context object
         const response = await getFileContent(request, targetUrl);
     
         if (response === null) {
-            return new Response('Error: Failed to fetch image', { status: 500 });
+            return returnFileError('Error: Failed to fetch image');
         } else if (response.status === 404) {
             return await return404(url);
         }
@@ -216,7 +216,7 @@ export async function onRequest(context) {  // Contents of context object
 
         return newRes;
     } catch (error) {
-        return new Response('Error: ' + error, { status: 500 });
+        return returnFileError('Error: ' + error);
     }
 }
 
@@ -450,7 +450,7 @@ async function handleR2File(context, fileId, encodedFileName, fileType) {
         }
 
         if (object === null) {
-            return new Response('Error: Failed to fetch file', { status: 500 });
+            return returnFileNotFound('Error: File Not Found');
         }
 
         const headers = new Headers();
@@ -479,7 +479,7 @@ async function handleR2File(context, fileId, encodedFileName, fileType) {
             headers,
         });
     } catch (error) {
-        return new Response(`Error: Failed to fetch from R2 - ${error.message}`, { status: 500 });
+        return returnFileError(`Error: Failed to fetch from R2 - ${error.message}`);
     }
 }
 
@@ -542,6 +542,6 @@ async function handleS3File(context, metadata, encodedFileName, fileType) {
         });
 
     } catch (error) {
-        return new Response(`Error: Failed to fetch from S3 - ${error.message}`, { status: 500 });
+        return returnFileError(`Error: Failed to fetch from S3 - ${error.message}`);
     }
 }
